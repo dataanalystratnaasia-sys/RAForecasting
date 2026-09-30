@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+scipy
+scikit-learn
+statsmodels
+xgboost
+plotly
+gspread
+google-auth
