@@ -154,6 +154,7 @@ def new_xgb() -> XGBRegressor:
     return XGBRegressor(
         n_estimators=300, max_depth=3, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8, random_state=42,
+        n_jobs=1,  # hemat CPU di Streamlit Cloud
     )
 
 
@@ -355,19 +356,20 @@ if df_all.empty:
 # ---- Filter ----
 c1, c2, c3, c4 = st.columns([2, 3, 2, 1.5])
 
-brand = c1.selectbox("Brand", ["Semua Brand"] + sorted(df_all[COL_BRAND].unique()))
-df_f = df_all if brand == "Semua Brand" else df_all[df_all[COL_BRAND] == brand]
+brand_in = c1.selectbox("Brand", ["Semua Brand"] + sorted(df_all[COL_BRAND].unique()))
+df_f = df_all if brand_in == "Semua Brand" else df_all[df_all[COL_BRAND] == brand_in]
 
-category = c2.selectbox(
+category_in = c2.selectbox(
     "Kategori Barang", ["Semua Kategori"] + sorted(df_f[COL_CATEGORY].unique())
 )
-period = c3.selectbox("Periode Forecast", list(PERIODS.keys()))
-cfg = PERIODS[period]
-horizon_in = c4.number_input(f"Forecast ke depan ({cfg['unit']})", 1, 365, cfg["horizon"])
-horizon = horizon_in
+period_in = c3.selectbox("Periode Forecast", list(PERIODS.keys()))
+cfg_in = PERIODS[period_in]
+horizon_in = int(c4.number_input(
+    f"Forecast ke depan ({cfg_in['unit']})", 1, 365, cfg_in["horizon"]
+))
 
-if category != "Semua Kategori":
-    df_f = df_f[df_f[COL_CATEGORY] == category]
+if category_in != "Semua Kategori":
+    df_f = df_f[df_f[COL_CATEGORY] == category_in]
 if df_f.empty:
     st.warning("Tidak ada data untuk filter yang dipilih.")
     st.stop()
@@ -376,21 +378,36 @@ if df_f.empty:
 run_clicked = st.button("🚀 Mulai FORECAST", type="primary")
 
 if run_clicked:
-    # Hitung HANYA saat tombol diklik
-    pivot = build_pivot(df_f[[COL_DATE, COL_CATEGORY, COL_QTY]], cfg["freq"])
-    series = pivot.sum(axis=1) if category == "Semua Kategori" else pivot[category]
-    series.name = "QTY"
+    # Komputasi berat HANYA jalan saat tombol diklik
+    pivot = build_pivot(df_f[[COL_DATE, COL_CATEGORY, COL_QTY]], cfg_in["freq"])
+    series_new = (pivot.sum(axis=1) if category_in == "Semua Kategori"
+                  else pivot[category_in])
+    series_new.name = "QTY"
+
+    if len(series_new) < min_length(cfg_in):
+        st.session_state.pop("fc", None)
+        st.warning(
+            f"Data hanya {len(series_new)} periode {period_in.lower()}; minimal "
+            f"{min_length(cfg_in)} periode dibutuhkan untuk backtest dan pelatihan model. "
+            "Coba periode yang lebih kecil atau filter yang lebih luas."
+        )
+        st.stop()
+
+    res_new = run_pipeline(series_new, period_in, horizon_in)
+    if res_new is None:
+        st.session_state.pop("fc", None)
+        st.error("Semua model gagal dilatih untuk data ini.")
+        st.stop()
 
     # Simpan hasil + parameter yang dipakai, supaya tampilan tidak hilang
-    # saat ada rerun (mis. klik tombol download) dan tidak berubah
-    # kalau filter diganti sebelum klik tombol lagi.
+    # saat rerun (mis. klik tombol unduh) dan tidak berubah sebelum klik lagi.
     st.session_state["fc"] = dict(
-        res=res, series=series, brand=brand, category=category,
-        period=period, horizon=int(horizon),
+        res=res_new, series=series_new, brand=brand_in, category=category_in,
+        period=period_in, horizon=horizon_in,
         total_qty=float(df_f[COL_QTY].sum()),
     )
 
-# Belum pernah klik -> berhenti di sini (tidak ada komputasi berat)
+# Belum pernah klik -> berhenti (tidak ada komputasi berat)
 if "fc" not in st.session_state:
     st.info("Pilih Brand, Kategori Barang, dan Periode Forecast, lalu klik **Mulai FORECAST**.")
     st.stop()
@@ -402,8 +419,8 @@ brand, category = S["brand"], S["category"]
 period, horizon = S["period"], S["horizon"]
 cfg = PERIODS[period]
 
-# Beri tahu kalau filter di atas sudah berbeda dari hasil yang ditampilkan
-if (brand, category, period, int(horizon_in)) != (S["brand"], S["category"], S["period"], S["horizon"]):
+# Peringatan kalau filter berbeda dari hasil yang sedang ditampilkan
+if (brand_in, category_in, period_in, horizon_in) != (brand, category, period, horizon):
     st.warning("Filter sudah berubah. Klik **Mulai FORECAST** untuk memperbarui hasil.")
 
 # ---- Sidebar ----
