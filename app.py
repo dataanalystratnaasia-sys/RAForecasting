@@ -363,7 +363,8 @@ category = c2.selectbox(
 )
 period = c3.selectbox("Periode Forecast", list(PERIODS.keys()))
 cfg = PERIODS[period]
-horizon = c4.number_input(f"Forecast ke depan ({cfg['unit']})", 1, 365, cfg["horizon"])
+horizon_in = c4.number_input(f"Forecast ke depan ({cfg['unit']})", 1, 365, cfg["horizon"])
+horizon = horizon_in
 
 if category != "Semua Kategori":
     df_f = df_f[df_f[COL_CATEGORY] == category]
@@ -371,29 +372,45 @@ if df_f.empty:
     st.warning("Tidak ada data untuk filter yang dipilih.")
     st.stop()
 
-# ---- Pivot & series ----
-pivot = build_pivot(df_f[[COL_DATE, COL_CATEGORY, COL_QTY]], cfg["freq"])
-series = pivot.sum(axis=1) if category == "Semua Kategori" else pivot[category]
-series.name = "QTY"
+# ---- Tombol mulai ----
+run_clicked = st.button("🚀 Mulai FORECAST", type="primary")
 
-if len(series) < min_length(cfg):
-    st.warning(
-        f"Data hanya {len(series)} periode {period.lower()}; minimal {min_length(cfg)} "
-        "periode dibutuhkan untuk backtest dan pelatihan model. "
-        "Coba periode yang lebih kecil atau filter yang lebih luas."
+if run_clicked:
+    # Hitung HANYA saat tombol diklik
+    pivot = build_pivot(df_f[[COL_DATE, COL_CATEGORY, COL_QTY]], cfg["freq"])
+    series = pivot.sum(axis=1) if category == "Semua Kategori" else pivot[category]
+    series.name = "QTY"
+
+    # Simpan hasil + parameter yang dipakai, supaya tampilan tidak hilang
+    # saat ada rerun (mis. klik tombol download) dan tidak berubah
+    # kalau filter diganti sebelum klik tombol lagi.
+    st.session_state["fc"] = dict(
+        res=res, series=series, brand=brand, category=category,
+        period=period, horizon=int(horizon),
+        total_qty=float(df_f[COL_QTY].sum()),
     )
+
+# Belum pernah klik -> berhenti di sini (tidak ada komputasi berat)
+if "fc" not in st.session_state:
+    st.info("Pilih Brand, Kategori Barang, dan Periode Forecast, lalu klik **Mulai FORECAST**.")
     st.stop()
 
-res = run_pipeline(series, period, int(horizon))
-if res is None:
-    st.error("Semua model gagal dilatih untuk data ini.")
-    st.stop()
+# Ambil hasil tersimpan
+S = st.session_state["fc"]
+res, series = S["res"], S["series"]
+brand, category = S["brand"], S["category"]
+period, horizon = S["period"], S["horizon"]
+cfg = PERIODS[period]
+
+# Beri tahu kalau filter di atas sudah berbeda dari hasil yang ditampilkan
+if (brand, category, period, int(horizon_in)) != (S["brand"], S["category"], S["period"], S["horizon"]):
+    st.warning("Filter sudah berubah. Klik **Mulai FORECAST** untuk memperbarui hasil.")
 
 # ---- Sidebar ----
 with st.sidebar:
     st.header("Ringkasan")
     st.metric("Total Data", f"{len(series):,}")
-    st.metric("Total QTY", f"{df_f[COL_QTY].sum():,.0f}")
+    st.metric("Total QTY", f"{S['total_qty']:,.0f}")
     st.metric("Model yang digunakan", res["best"])
     st.metric("Best Lag", f"{res['best_lag']:+d}")
     st.metric("MAE", f"{res['best_mae']:,.2f}")
@@ -404,6 +421,7 @@ with st.sidebar:
     )
     if st.button("🔄 Muat ulang data"):
         st.cache_data.clear()
+        st.session_state.pop("fc", None)
         st.rerun()
 
 st.markdown(f"### {brand} - {category}")
