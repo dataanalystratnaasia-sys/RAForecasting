@@ -36,6 +36,7 @@ COL_CATEGORY = "Nama Kategori Barang Barang & Jasa"
 COL_QTY = "QTY"
 
 ALPHA_CROSTON = 0.1  # sama seperti notebook
+DATA_TTL = 60        # detik; cache data spreadsheet kedaluwarsa tiap 60 detik
 
 # Parameter tiap periode. Harian = persis notebook (lag 1,2,3,7,14; backtest 7 hari).
 PERIODS = {
@@ -74,8 +75,9 @@ def to_number(x) -> float:
         return np.nan
 
 
-@st.cache_data(ttl=600, show_spinner="Memuat data dari Google Spreadsheet...")
-def load_data() -> pd.DataFrame:
+@st.cache_data(ttl=DATA_TTL, show_spinner="Memuat data dari Google Spreadsheet...")
+def load_data():
+    """Return (df_bersih, info). info berisi statistik baris yang dibuang."""
     creds = Credentials.from_service_account_info(
         dict(st.secrets["gcp_service_account"]), scopes=SCOPES
     )
@@ -87,14 +89,30 @@ def load_data() -> pd.DataFrame:
     df = pd.DataFrame(values[1:], columns=header)
     df = df.loc[:, [c for c in df.columns if c != ""]]
 
+    # buang baris yang benar-benar kosong (bukan data)
+    df = df[~(df.apply(lambda col: col.astype(str).str.strip()) == "").all(axis=1)]
+    n_raw = len(df)
+
     df[COL_DATE] = pd.to_datetime(df[COL_DATE], dayfirst=True, errors="coerce")
     df[COL_QTY] = df[COL_QTY].apply(to_number)
     df[COL_BRAND] = df[COL_BRAND].astype(str).str.strip()
     df[COL_CATEGORY] = df[COL_CATEGORY].astype(str).str.strip()
 
-    df = df.dropna(subset=[COL_DATE, COL_QTY])
-    df = df[(df[COL_BRAND] != "") & (df[COL_CATEGORY] != "")]
-    return df
+    valid = (
+        df[COL_DATE].notna() & df[COL_QTY].notna()
+        & (df[COL_BRAND] != "") & (df[COL_CATEGORY] != "")
+    )
+    dropped = df.loc[~valid, [COL_DATE, COL_BRAND, COL_CATEGORY, COL_QTY]]
+    clean = df.loc[valid]
+
+    info = dict(
+        n_raw=n_raw,
+        n_clean=len(clean),
+        n_dropped=len(dropped),
+        dropped_sample=dropped.tail(10),
+        loaded_at=pd.Timestamp.now(),
+    )
+    return clean, info
 
 
 def build_pivot(df: pd.DataFrame, freq: str) -> pd.DataFrame:
@@ -344,7 +362,7 @@ def run_pipeline(series: pd.Series, period: str, horizon: int):
 st.title("📈 Dashboard Forecasting QTY")
 
 try:
-    df_all = load_data()
+    df_all, data_info = load_data()
 except Exception as e:
     st.error(f"Gagal memuat data dari Google Spreadsheet: {e}")
     st.stop()
@@ -352,6 +370,32 @@ except Exception as e:
 if df_all.empty:
     st.warning("Data kosong setelah dibersihkan. Periksa isi sheet 'MASTER DATA'.")
     st.stop()
+
+# "Sidik jari" data: berubah kalau isi spreadsheet berubah
+data_sig = (
+    len(df_all),
+    str(df_all[COL_DATE].max()),
+    round(float(df_all[COL_QTY].sum()), 4),
+)
+
+# ---- Sidebar: status data (selalu tampil) ----
+with st.sidebar:
+    st.header("Status Data")
+    st.caption(
+        f"Tanggal terakhir di data: **{df_all[COL_DATE].max():%Y-%m-%d}**  \n"
+        f"Baris terbaca: **{data_info['n_clean']:,}** dari {data_info['n_raw']:,}  \n"
+        f"Dimuat: {data_info['loaded_at']:%H:%M:%S} "
+        f"(cache maks. {DATA_TTL} detik)"
+    )
+    if data_info["n_dropped"] > 0:
+        st.warning(f"{data_info['n_dropped']:,} baris dibuang saat cleaning "
+                   "(tanggal/QTY/Brand/Kategori tidak valid).")
+        with st.expander("Lihat contoh baris yang dibuang"):
+            st.dataframe(data_info["dropped_sample"], use_container_width=True)
+    if st.button("🔄 Muat ulang data"):
+        st.cache_data.clear()
+        st.session_state.pop("fc", None)
+        st.rerun()
 
 # ---- Filter ----
 c1, c2, c3, c4 = st.columns([2, 3, 2, 1.5])
@@ -405,6 +449,8 @@ if run_clicked:
         res=res_new, series=series_new, brand=brand_in, category=category_in,
         period=period_in, horizon=horizon_in,
         total_qty=float(df_f[COL_QTY].sum()),
+        data_sig=data_sig,
+        last_date=df_f[COL_DATE].max(),
     )
 
 # Belum pernah klik -> berhenti (tidak ada komputasi berat)
@@ -423,7 +469,12 @@ cfg = PERIODS[period]
 if (brand_in, category_in, period_in, horizon_in) != (brand, category, period, horizon):
     st.warning("Filter sudah berubah. Klik **Mulai FORECAST** untuk memperbarui hasil.")
 
-# ---- Sidebar ----
+# Peringatan kalau data spreadsheet berubah sejak forecast terakhir
+if S.get("data_sig") != data_sig:
+    st.warning("Data di spreadsheet sudah berubah sejak forecast terakhir. "
+               "Klik **Mulai FORECAST** untuk memperbarui hasil.")
+
+# ---- Sidebar: ringkasan hasil ----
 with st.sidebar:
     st.header("Ringkasan")
     st.metric("Total Data", f"{len(series):,}")
@@ -432,14 +483,11 @@ with st.sidebar:
     st.metric("Best Lag", f"{res['best_lag']:+d}")
     st.metric("MAE", f"{res['best_mae']:,.2f}")
     st.caption(
+        f"Data terakhir pada hasil ini: {series.index[-1]:%Y-%m-%d}. "
         f"Total Data = jumlah periode {period.lower()}. MAE dari backtest "
         f"{cfg['n_test']} {cfg['unit']} terakhir; model terbaik = MAE terkecil. "
         "Best Lag = pergeseran periode (±3) dengan korelasi aktual-prediksi tertinggi."
     )
-    if st.button("🔄 Muat ulang data"):
-        st.cache_data.clear()
-        st.session_state.pop("fc", None)
-        st.rerun()
 
 st.markdown(f"### {brand} - {category}")
 st.info(f"Rata-rata kesalahan prediksi (MAE) adalah **{res['best_mae']:,.2f}** QTY per {cfg['unit']}")
