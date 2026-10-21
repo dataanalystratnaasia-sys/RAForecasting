@@ -538,9 +538,9 @@ with tab2:
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=hist.index, y=hist.values, name="Aktual",
                               mode="lines+markers"))
-    fig2.add_trace(go.Scatter(x=fc["Periode"], y=fc["Upper (P90)"], line=dict(width=0),
+    fig2.add_trace(go.Scatter(x=fc["Periode"], y=fc["Upper (P90)"], mode="lines", line=dict(width=0),
                               showlegend=False, hoverinfo="skip"))
-    fig2.add_trace(go.Scatter(x=fc["Periode"], y=fc["Lower (P10)"], line=dict(width=0),
+    fig2.add_trace(go.Scatter(x=fc["Periode"], y=fc["Lower (P10)"], mode="lines", line=dict(width=0),
                               fill="tonexty", fillcolor="rgba(220,20,60,0.15)",
                               name="Rentang P10–P90", hoverinfo="skip"))
     fig2.add_trace(go.Scatter(
