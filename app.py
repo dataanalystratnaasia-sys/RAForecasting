@@ -24,7 +24,7 @@ st.set_page_config(page_title="Dashboard Forecasting QTY", layout="wide")
 # ------------------------------------------------------------------
 # KONFIGURASI
 # ------------------------------------------------------------------
-SHEET_NAME = "MASTER DATA"
+SHEET_NAME = "FORECAST DATA"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
